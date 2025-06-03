@@ -7,7 +7,7 @@ const { exec } = require('child_process');
 const app = express();
 const port = process.env.PORT || 3000; // Use environment port or 3000
 
-// Configure Multer (ensure uploads and compressed_pdfs directories exist or are created)
+// Configure Multer
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     const uploadDir = 'uploads/';
@@ -15,7 +15,6 @@ const storage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
-    // Sanitize filename for storage (this is for the uploaded temp file, not the final download name)
     const safeOriginalName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
     cb(null, Date.now() + '-' + safeOriginalName);
   }
@@ -26,7 +25,7 @@ const upload = multer({ storage: storage });
 const compressionSettings = {
   little: { level: '/screen', imageResolution: '72' },
   middle: { level: '/ebook', imageResolution: '150' },
-  high: { level: '/printer', imageResolution: '300' } // Good balance for print
+  high: { level: '/printer', imageResolution: '300' }
 };
 
 // API Endpoint for PDF compression
@@ -39,7 +38,6 @@ app.post('/compress-pdf', upload.single('pdfFile'), (req, res) => {
   const settings = compressionSettings[compressionLevel];
 
   if (!settings) {
-    // Clean up uploaded file if settings are invalid
     fs.unlink(req.file.path, (err) => {
       if (err) console.error("Error deleting uploaded file on invalid settings:", err);
     });
@@ -49,35 +47,33 @@ app.post('/compress-pdf', upload.single('pdfFile'), (req, res) => {
   const inputPath = req.file.path;
 
   // --- Robust Filename Generation Logic ---
-  const originalFileName = req.file.originalname.trim(); // Trim whitespace
+  const originalFileName = req.file.originalname.trim(); 
 
-  // Get the original base name and extension
   let originalFileExtension = path.extname(originalFileName);
   let baseName = path.basename(originalFileName, originalFileExtension);
 
-  // Handle cases where original name might be just an extension (e.g. ".pdf") or ends with a dot.
   if (baseName === '' && originalFileName.startsWith('.')) {
-      baseName = 'file'; // Default if original name was like ".pdf"
+      baseName = 'file_from_extension'; 
   } else if (originalFileName.endsWith('.') && originalFileExtension === '.') {
-      // If original name is "filename.", extname is ".", basename is "filename."
-      // We want baseName to be "filename"
       baseName = originalFileName.substring(0, originalFileName.length - 1);
   }
-
+  if (!baseName) { // If baseName is empty after attempting to extract (e.g. original was just ".")
+      baseName = 'untitled';
+  }
 
   // Sanitize the base name:
-  // - Allow alphanumeric, underscore, hyphen.
-  // - Replace other characters with a single underscore.
+  // - Replace any character that is NOT alphanumeric, underscore, or hyphen with an underscore.
+  //   THIS WILL REPLACE DOTS (.) IN THE BASENAME WITH UNDERSCORES (_).
   // - Collapse multiple underscores into one.
-  // - Remove leading/trailing underscores that might result from sanitization.
-  let sanitizedBaseName = baseName.replace(/[^a-zA-Z0-9_-]/g, '_')
+  // - Remove leading/trailing underscores from the sanitized base name.
+  let sanitizedBaseName = baseName.replace(/[^a-zA-Z0-9_-]/g, '_') 
                                  .replace(/__+/g, '_')
-                                 .replace(/^_+|_+$/g, ''); // Remove leading/trailing underscores
+                                 .replace(/^_+|_+$/g, ''); 
 
-  // Ensure it's not empty after sanitization, provide a default if it is
-  const finalBaseName = sanitizedBaseName || 'compressed_document';
+  const finalBaseName = sanitizedBaseName || 'compressed_document'; // Default if empty after all
 
   // Construct the final output filename, ensuring it ALWAYS ends with .pdf
+  // CRITICAL: Ensure this line ends with ".pdf`};" and NOT ".pdf_`};"
   const outputFileName = `compressed-${Date.now()}-${finalBaseName}.pdf`;
   // --- End of Robust Filename Generation Logic ---
 
@@ -85,13 +81,9 @@ app.post('/compress-pdf', upload.single('pdfFile'), (req, res) => {
   if (!fs.existsSync(compressedDir)) fs.mkdirSync(compressedDir, { recursive: true });
   const outputPath = path.join(compressedDir, outputFileName);
 
-
-  // Ghostscript command
-  // Ensure 'gs' is in your PATH or provide the full path to the executable.
-  // Quoted paths for safety with spaces or special characters.
   const gsCommand = `gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 \
                      -dPDFSETTINGS=${settings.level} \
-dNOPAUSE -dQUIET -dBATCH \
+                     -dNOPAUSE -dQUIET -dBATCH \
                      -dDetectDuplicateImages=true \
                      -dColorImageResolution=${settings.imageResolution} \
                      -dGrayImageResolution=${settings.imageResolution} \
@@ -100,7 +92,6 @@ dNOPAUSE -dQUIET -dBATCH \
 
   console.log(`Executing Ghostscript: ${gsCommand}`);
   exec(gsCommand, (error, stdout, stderr) => {
-    // Always delete the uploaded temporary file
     fs.unlink(inputPath, (err) => {
       if (err) console.error("Error deleting uploaded temporary file:", err);
     });
@@ -108,12 +99,11 @@ dNOPAUSE -dQUIET -dBATCH \
     if (error) {
       console.error(`Ghostscript error: ${error.message}`);
       console.error(`Ghostscript stderr: ${stderr}`);
-      // It's possible outputPath was created but is invalid/empty
-      fs.unlink(outputPath, () => {}); // Attempt to clean up potentially bad output
+      fs.unlink(outputPath, () => {}); 
       return res.status(500).json({ message: `Error compressing PDF. Ghostscript stderr: ${stderr || error.message}` });
     }
 
-    if (stderr) {
+    if (stderr && stderr.length > 0) { // Check length to avoid logging empty stderr
         console.warn(`Ghostscript stderr (warnings/info): ${stderr}`);
     }
 
@@ -122,9 +112,7 @@ dNOPAUSE -dQUIET -dBATCH \
     res.download(outputPath, outputFileName, (downloadErr) => {
       if (downloadErr) {
         console.error("Error sending file to client:", downloadErr);
-        // No need to send another response if headers already sent by res.download
       }
-      // Delete the compressed file from server after download
       fs.unlink(outputPath, (delErr) => {
         if (delErr) console.error("Error deleting compressed file from server:", delErr);
       });
@@ -132,7 +120,7 @@ dNOPAUSE -dQUIET -dBATCH \
   });
 });
 
-// Modern Frontend
+// Modern Frontend (identical to previous full code response)
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -358,8 +346,6 @@ app.get('/', (req, res) => {
             statusEl.className = 'status error';
           } finally {
             loader.style.display = 'none'; submitBtn.disabled = false;
-            // Optionally reset file input:
-            // fileInput.value = ''; fileNameDisplay.textContent = '';
           }
         });
       </script>
@@ -370,7 +356,6 @@ app.get('/', (req, res) => {
 
 app.listen(port, () => {
   console.log(`PDF Compressor app listening at http://localhost:${port}`);
-  // Ensure directories exist (useful for local dev, Dockerfile handles it for deployment)
   if (!fs.existsSync('uploads')) fs.mkdirSync('uploads', { recursive: true });
   if (!fs.existsSync('compressed_pdfs')) fs.mkdirSync('compressed_pdfs', { recursive: true });
 });
